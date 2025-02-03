@@ -4,14 +4,17 @@ import ec.edu.espe.pos.model.Configuracion;
 import ec.edu.espe.pos.model.Transaccion;
 import ec.edu.espe.pos.repository.TransaccionRepository;
 import ec.edu.espe.pos.client.GatewayTransaccionClient;
+import ec.edu.espe.pos.client.ValidacionTarjetaClient;
 import ec.edu.espe.pos.controller.dto.ActualizacionEstadoDTO;
 import ec.edu.espe.pos.controller.dto.ComercioDTO;
 import ec.edu.espe.pos.controller.dto.FacturacionComercioDTO;
 import ec.edu.espe.pos.controller.dto.GatewayTransaccionDTO;
+import ec.edu.espe.pos.controller.dto.ValidacionTarjetaDTO;
 import ec.edu.espe.pos.controller.mapper.TransaccionMapper;
 import ec.edu.espe.pos.client.GatewayComercioClient;
 import ec.edu.espe.pos.exception.NotFoundException;
 import ec.edu.espe.pos.exception.InvalidDataException;
+import ec.edu.espe.pos.exception.TarjetaInvalidaException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +26,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Set;
 import java.util.Random;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 
 @Service
 public class TransaccionService {
@@ -50,15 +56,53 @@ public class TransaccionService {
     private final GatewayTransaccionClient gatewayClient;
     private final GatewayComercioClient comercioClient;
     private final ConfiguracionService configuracionService;
+    private final ValidacionTarjetaClient validacionTarjetaClient;
 
     public TransaccionService(TransaccionRepository transaccionRepository,
             GatewayTransaccionClient gatewayClient,
             GatewayComercioClient comercioClient,
-            ConfiguracionService configuracionService) {
+            ConfiguracionService configuracionService,
+            ValidacionTarjetaClient validacionTarjetaClient) {
         this.transaccionRepository = transaccionRepository;
         this.gatewayClient = gatewayClient;
         this.comercioClient = comercioClient;
         this.configuracionService = configuracionService;
+        this.validacionTarjetaClient = validacionTarjetaClient;
+    }
+
+    private void validarTarjeta(String datosSensibles) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode datosTarjeta = mapper.readTree(datosSensibles);
+
+            ValidacionTarjetaDTO validacionDTO = new ValidacionTarjetaDTO();
+            validacionDTO.setNumero(datosTarjeta.get("cardNumber").asText());
+            validacionDTO.setFechaCaducidad(datosTarjeta.get("expiryDate").asText());
+            validacionDTO.setCvv(datosTarjeta.get("cvv").asText());
+
+            ResponseEntity<Void> respuesta = validacionTarjetaClient.validarTarjeta(validacionDTO);
+            
+            if (respuesta.getStatusCode().value() == 404) {
+                log.error("Error en la validación de la tarjeta: datos inválidos");
+                throw new TarjetaInvalidaException("Datos de tarjeta inválidos");
+            }
+
+            log.info("Validación de tarjeta exitosa");
+        } catch (Exception e) {
+            log.error("Error al validar la tarjeta: {}", e.getMessage());
+            throw new TarjetaInvalidaException(e.getMessage());
+        }
+    }
+
+    private void validarDatosIniciales(Transaccion transaccion) {
+        if (transaccion.getMarca() == null || transaccion.getMarca().length() > 4
+                || !MARCAS_VALIDAS.contains(transaccion.getMarca())) {
+            throw new IllegalArgumentException(
+                    "Marca inválida. Debe ser una de: " + String.join(", ", MARCAS_VALIDAS));
+        }
+        if (transaccion.getMonto() == null || transaccion.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new InvalidDataException("El monto debe ser mayor que cero");
+        }
     }
 
     @Transactional
@@ -66,39 +110,31 @@ public class TransaccionService {
             Boolean interesDiferido, Integer cuotas) {
         log.info("Iniciando creación de transacción. Datos recibidos: {}", transaccion);
 
-        Transaccion transaccionInicial = guardarTransaccionInicial(transaccion);
-        log.info("Transacción guardada inicialmente: {}", transaccionInicial);
-        log.info("Código único de la transacción guardada: {}", transaccionInicial.getCodigoUnicoTransaccion());
+        validarDatosIniciales(transaccion);
+        validarTarjeta(datosSensibles);
+        log.info("Validaciones completadas exitosamente");
 
-        return procesarConGateway(transaccionInicial, datosSensibles, interesDiferido, cuotas);
+        return crearYProcesarTransaccion(transaccion, datosSensibles, interesDiferido, cuotas);
     }
 
-    @Transactional
-    public Transaccion guardarTransaccionInicial(Transaccion transaccion) {
-        if (transaccion.getMarca() == null || transaccion.getMarca().length() > 4
-                || !MARCAS_VALIDAS.contains(transaccion.getMarca())) {
-            throw new IllegalArgumentException(
-                    "Marca inválida. Debe ser una de: " + String.join(", ", MARCAS_VALIDAS));
-        }
-
+    private Transaccion crearYProcesarTransaccion(Transaccion transaccion, String datosSensibles,
+            Boolean interesDiferido, Integer cuotas) {
         transaccion.setTipo(TIPO_PAGO);
         transaccion.setModalidad(MODALIDAD_SIMPLE);
         transaccion.setMoneda("USD");
         transaccion.setFecha(LocalDateTime.now());
         transaccion.setEstado(ESTADO_ENVIADO);
         transaccion.setEstadoRecibo(ESTADO_RECIBO_PENDIENTE);
-
-        String codigoUnico = generarCodigoUnico();
-        transaccion.setCodigoUnicoTransaccion(codigoUnico);
+        transaccion.setCodigoUnicoTransaccion(generarCodigoUnico());
         transaccion.setDetalle("Transacción POS - " + transaccion.getMarca());
 
-        log.info("Valores establecidos para transacción inicial: marca={}, monto={}",
+        log.info("Valores establecidos para transacción: marca={}, monto={}",
                 transaccion.getMarca(), transaccion.getMonto());
 
-        validarDatos(transaccion);
-        log.info("Validación de campos completada exitosamente");
+        Transaccion transaccionGuardada = transaccionRepository.save(transaccion);
+        log.info("Transacción guardada inicialmente: {}", transaccionGuardada.getCodigoUnicoTransaccion());
 
-        return transaccionRepository.save(transaccion);
+        return procesarConGateway(transaccionGuardada, datosSensibles, interesDiferido, cuotas);
     }
 
     @Transactional
@@ -129,7 +165,6 @@ public class TransaccionService {
                 transaccion.setEstado(ESTADO_RECHAZADO); 
             }
             
-           
             transaccion = transaccionRepository.save(transaccion);
             log.info("Estado de transacción actualizado a: {}", transaccion.getEstado());
 
@@ -141,15 +176,6 @@ public class TransaccionService {
             transaccion = transaccionRepository.save(transaccion);
             log.info("Transacción marcada como rechazada debido a error de comunicación");
             return transaccion;
-        }
-    }
-
-    private void validarDatos(Transaccion transaccion) {
-        if (transaccion.getMonto() == null || transaccion.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new InvalidDataException("El monto debe ser mayor que cero");
-        }
-        if (transaccion.getMarca() == null || transaccion.getMarca().trim().isEmpty()) {
-            throw new InvalidDataException("La marca es obligatoria");
         }
     }
 

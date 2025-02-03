@@ -21,7 +21,7 @@ const MainPage = () => {
 
   const checkTransactionStatus = async (transactionId) => {
     try {
-      const response = await fetch(`http://localhost:8081/v1/transacciones/${transactionId}/estado`);
+      const response = await fetch(`http://ec2-3-147-57-223.us-east-2.compute.amazonaws.com/v1/transacciones/${transactionId}/estado`);
       const result = await response.json();
 
       if (result.estado === "AUT") {
@@ -199,7 +199,7 @@ const MainPage = () => {
 
       console.log("Payload a enviar:", transactionPayload);
 
-      const response = await fetch("http://localhost:8081/v1/procesamiento-transaccion/procesar", {
+      const response = await fetch("http://ec2-3-147-57-223.us-east-2.compute.amazonaws.com/v1/procesamiento-transaccion/procesar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(transactionPayload),

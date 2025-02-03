@@ -26,7 +26,7 @@ import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequestMapping("/v1/transacciones")
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "https://arquitectura-grupo02-pos.vercel.app/")
 @RequiredArgsConstructor
 @Tag(name = "Transacciones", description = "API para la gestión de transacciones en el POS")
 public class TransaccionController {

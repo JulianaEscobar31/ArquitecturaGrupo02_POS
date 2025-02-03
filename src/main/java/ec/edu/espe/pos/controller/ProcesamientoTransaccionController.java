@@ -18,10 +18,11 @@ import ec.edu.espe.pos.controller.dto.TransaccionRespuestaDTO;
 import ec.edu.espe.pos.controller.mapper.TransaccionMapper;
 import ec.edu.espe.pos.model.Transaccion;
 import ec.edu.espe.pos.exception.InvalidDataException;
+import ec.edu.espe.pos.exception.TarjetaInvalidaException;
 
 import jakarta.validation.Valid;
 
-@CrossOrigin(origins = "http://localhost:3000/", allowedHeaders = "*", methods = {
+@CrossOrigin(origins = "https://arquitectura-grupo02-pos.vercel.app/", allowedHeaders = "*", methods = {
         RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS
 })
 @RestController
@@ -55,22 +56,25 @@ public class ProcesamientoTransaccionController {
             transaccion.setMonto(request.getMonto());
             transaccion.setMarca(request.getMarca());
 
-            Transaccion transaccionInicial = transaccionService.guardarTransaccionInicial(transaccion);
-            log.info("Transacción guardada inicialmente: {}", transaccionInicial);
+            Transaccion transaccionProcesada = transaccionService.crear(
+                transaccion,
+                request.getDatosTarjeta(),
+                request.getInteresDiferido(),
+                request.getCuotas()
+            );
 
-            TransaccionRespuestaDTO respuestaInicial = TransaccionRespuestaDTO.builder()
-                    .mensaje("Transacción registrada, procesando pago...")
-                    .estado("pending")
-                    .codigoUnicoTransaccion(transaccionInicial.getCodigoUnicoTransaccion())
-                    .build();
+            return ResponseEntity.status(201).body(TransaccionRespuestaDTO.builder()
+                    .mensaje("Transacción procesada exitosamente")
+                    .estado(transaccionProcesada.getEstado())
+                    .codigoUnicoTransaccion(transaccionProcesada.getCodigoUnicoTransaccion())
+                    .build());
 
-            transaccionService.procesarConGateway(transaccionInicial,
-                    request.getDatosTarjeta(),
-                    request.getInteresDiferido(),
-                    request.getCuotas());
-
-            return ResponseEntity.status(201).body(respuestaInicial);
-
+        } catch (TarjetaInvalidaException e) {
+            log.error("Error en validación de tarjeta: {}", e.getMessage());
+            return ResponseEntity.status(405).body(TransaccionRespuestaDTO.builder()
+                    .mensaje(e.getMessage())
+                    .estado("RECHAZADA")
+                    .build());
         } catch (InvalidDataException e) {
             log.error("Error en datos de entrada: {}", e.getMessage());
             return ResponseEntity.badRequest().body(TransaccionRespuestaDTO.builder()
@@ -85,5 +89,4 @@ public class ProcesamientoTransaccionController {
                     .build());
         }
     }
-
 }
